@@ -11,17 +11,19 @@ import (
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
-	"golang.org/x/net/html"
 )
 
-type CrawlModel struct {
-	Text      []string
-	ImgSrc    []string
-	ImgSrcset []string
+type OpenGraphModel struct {
+	Type        string
+	Title       string
+	SiteName    string
+	Description string
+	Author      string
+	Image       string
+	Url         string
 }
 
 // var contentsTag = cascadia.MustCompile("p, h1, h2, h3, h4, h5, h6")
-var keyword = []string{"Goal", "Hậu trường bóng đá tuần qua:", "Hậu trường bóng đá tuần qua"}
 
 func main() {
 	fmt.Println("---------------- Start crawl website--------------------")
@@ -46,58 +48,77 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// Remove script and style
-	doc.Find("script").Each(func(i int, el *goquery.Selection) {
-		el.Remove()
-	})
-	doc.Find("style").Each(func(i int, el *goquery.Selection) {
-		el.Remove()
-	})
-	crawlModel := CrawlModel{}
-	// Find text contains keyword
-	crawlModel.Text = findText(doc.Selection)
-	// Find src and srcset of img tag
-	doc.Find("img").Each(func(i int, el *goquery.Selection) {
-		src, exists := el.Attr("src")
-		if exists {
-			crawlModel.ImgSrc = append(crawlModel.ImgSrc, src)
-		}
-		srcset, exists := el.Attr("srcset")
-		if exists {
-			crawlModel.ImgSrcset = append(crawlModel.ImgSrcset, srcset)
-		}
-	})
+	openGraphModel := ParseDoc(doc)
+
 	// Write to data to output.json
-	file, _ := json.MarshalIndent(crawlModel, " ", " ")
+	file, _ := json.MarshalIndent(openGraphModel, " ", " ")
+	// log.Println(string(file))
 	_ = ioutil.WriteFile("output.json", file, 0644)
 }
 
-func findText(s *goquery.Selection) []string {
-	var list []string
-	var f func(*html.Node)
-	f = func(n *html.Node) {
-		if n.Type == html.TextNode {
-			if checkContainsText(n.Data, keyword) {
-				list = append(list, n.Data)
+func ParseDoc(doc *goquery.Document) (openGraphModel OpenGraphModel) {
+	metaAttr := findMetaAttr(doc)
+	if metaAttr == "" {
+		return
+	}
+	doc.Find("meta").Each(func(i int, el *goquery.Selection) {
+		// type
+		value, _ := el.Attr(metaAttr)
+		if strings.EqualFold(value, "og:type") {
+			openGraphModel.Type, _ = el.Attr("content")
+		}
+		// Title
+		if strings.EqualFold(value, "og:title") {
+			openGraphModel.Title, _ = el.Attr("content")
+		}
+		// siteName
+		if metaAttr == "name" {
+			if strings.Contains(value, ":site") {
+				openGraphModel.SiteName, _ = el.Attr("content")
+			}
+		} else if metaAttr == "property" {
+			if strings.EqualFold(value, "og:site_name") {
+				openGraphModel.SiteName, _ = el.Attr("content")
 			}
 		}
-		if n.FirstChild != nil {
-			for c := n.FirstChild; c != nil; c = c.NextSibling {
-				f(c)
-			}
+		// description
+		if strings.EqualFold(value, "og:description") {
+			openGraphModel.Description, _ = el.Attr("content")
 		}
-	}
-	for _, n := range s.Nodes {
-		f(n)
-	}
-	return list
+		// author
+		if strings.Contains(value, "author") {
+			openGraphModel.Author, _ = el.Attr("content")
+		}
+		// image
+		if strings.EqualFold(value, "og:image") {
+			openGraphModel.Image, _ = el.Attr("content")
+		}
+		// url
+		if strings.EqualFold(value, "og:url") {
+			openGraphModel.Url, _ = el.Attr("content")
+		}
+	})
+	return
 }
 
-func checkContainsText(str string, list []string) bool {
-	for i := range list {
-		if strings.Contains(str, list[i]) {
-			return true
+func findMetaAttr(doc *goquery.Document) (metaAttr string) {
+	// name
+	doc.Find("meta").Each(func(i int, el *goquery.Selection) {
+		value, exists := el.Attr("name")
+		if exists {
+			if strings.Contains(value, "og:") {
+				metaAttr = "name"
+			}
 		}
-	}
-	return false
+	})
+	// property
+	doc.Find("meta").Each(func(i int, el *goquery.Selection) {
+		value, exists := el.Attr("property")
+		if exists {
+			if strings.Contains(value, "og:") {
+				metaAttr = "property"
+			}
+		}
+	})
+	return
 }
