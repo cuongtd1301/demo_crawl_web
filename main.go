@@ -58,22 +58,19 @@ func main() {
 
 func ParseDoc(doc *goquery.Document) (openGraphModel OpenGraphModel) {
 	metaAttr := findMetaAttr(doc)
-	if metaAttr == "" {
-		return
-	}
 	doc.Find("meta").Each(func(i int, el *goquery.Selection) {
 		// type
 		value, _ := el.Attr(metaAttr)
-		if strings.EqualFold(value, "og:type") {
+		if strings.Contains(value, "type") {
 			openGraphModel.Type, _ = el.Attr("content")
 		}
 		// Title
-		if strings.EqualFold(value, "og:title") {
+		if strings.Contains(value, "title") {
 			openGraphModel.Title, _ = el.Attr("content")
 		}
 		// siteName
 		if metaAttr == "name" {
-			if strings.Contains(value, ":site") {
+			if strings.Contains(value, "site") {
 				openGraphModel.SiteName, _ = el.Attr("content")
 			}
 		} else if metaAttr == "property" {
@@ -82,7 +79,7 @@ func ParseDoc(doc *goquery.Document) (openGraphModel OpenGraphModel) {
 			}
 		}
 		// description
-		if strings.EqualFold(value, "og:description") {
+		if strings.Contains(value, "description") {
 			openGraphModel.Description, _ = el.Attr("content")
 		}
 		// author
@@ -90,35 +87,45 @@ func ParseDoc(doc *goquery.Document) (openGraphModel OpenGraphModel) {
 			openGraphModel.Author, _ = el.Attr("content")
 		}
 		// image
-		if strings.EqualFold(value, "og:image") {
+		if strings.Contains(value, "image") {
 			openGraphModel.Image, _ = el.Attr("content")
 		}
 		// url
-		if strings.EqualFold(value, "og:url") {
+		if strings.Contains(value, "url") {
 			openGraphModel.Url, _ = el.Attr("content")
 		}
 	})
+	if openGraphModel.Title == "" {
+		openGraphModel.Title = doc.Find("title").Text()
+	}
 	return
 }
 
 func findMetaAttr(doc *goquery.Document) (metaAttr string) {
-	// name
-	doc.Find("meta").Each(func(i int, el *goquery.Selection) {
-		value, exists := el.Attr("name")
-		if exists {
-			if strings.Contains(value, "og:") {
-				metaAttr = "name"
-			}
-		}
-	})
 	// property
 	doc.Find("meta").Each(func(i int, el *goquery.Selection) {
 		value, exists := el.Attr("property")
 		if exists {
 			if strings.Contains(value, "og:") {
 				metaAttr = "property"
+				return
 			}
 		}
 	})
-	return
+	if metaAttr != "" {
+		return
+	}
+	// // name
+	// doc.Find("meta").Each(func(i int, el *goquery.Selection) {
+	// 	value, exists := el.Attr("name")
+	// 	if exists {
+	// 		log.Println(i)
+	// 		log.Println("name:", value)
+	// 		if strings.Contains(value, "og:")  {
+	// 			metaAttr = "name"
+	// 			return
+	// 		}
+	// 	}
+	// })
+	return "name"
 }
