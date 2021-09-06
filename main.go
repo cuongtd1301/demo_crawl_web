@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crawlweb/service"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -14,13 +15,14 @@ import (
 )
 
 type OpenGraphModel struct {
-	Type        string
-	Title       string
-	SiteName    string
-	Description string
-	Author      string
-	Image       string
-	Url         string
+	Type         string
+	Title        string
+	SiteName     string
+	Description  string
+	Author       string
+	Image        string
+	Url          string
+	ImageDriveId string
 }
 
 // var contentsTag = cascadia.MustCompile("p, h1, h2, h3, h4, h5, h6")
@@ -49,6 +51,8 @@ func main() {
 		log.Fatal(err)
 	}
 	openGraphModel := ParseDoc(doc)
+
+	openGraphModel.ImageDriveId = service.CreateFileAndSave(openGraphModel.Image)
 
 	// Write to data to output.json
 	file, _ := json.MarshalIndent(openGraphModel, " ", " ")
@@ -87,7 +91,7 @@ func ParseDoc(doc *goquery.Document) (openGraphModel OpenGraphModel) {
 			openGraphModel.Author, _ = el.Attr("content")
 		}
 		// image
-		if strings.Contains(value, "image") {
+		if strings.Contains(value, "image") && !strings.Contains(value, "image:") {
 			openGraphModel.Image, _ = el.Attr("content")
 		}
 		// url
