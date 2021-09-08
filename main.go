@@ -15,14 +15,15 @@ import (
 )
 
 type OpenGraphModel struct {
-	Type         string
-	Title        string
-	SiteName     string
-	Description  string
-	Author       string
-	Image        string
-	Url          string
-	ImageDriveId string
+	Type        string
+	Title       string
+	SiteName    string
+	Description string
+	Author      string
+	Image       string
+	Url         string
+	Filename    string
+	Etag        string
 }
 
 // var contentsTag = cascadia.MustCompile("p, h1, h2, h3, h4, h5, h6")
@@ -52,7 +53,7 @@ func main() {
 	}
 	openGraphModel := ParseDoc(doc)
 
-	openGraphModel.ImageDriveId = service.UploadFile(openGraphModel.Image)
+	openGraphModel.Filename, openGraphModel.Etag = service.UploadFileToBucket(openGraphModel.Image)
 
 	// Write to data to output.json
 	file, _ := json.MarshalIndent(openGraphModel, " ", " ")
