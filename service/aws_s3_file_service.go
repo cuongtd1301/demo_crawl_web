@@ -1,12 +1,14 @@
 package service
 
 import (
+	"context"
 	"crawlweb/infrastructure"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -38,7 +40,8 @@ func UploadFileToBucket(url string) (s3Filename string, etag string) {
 		Key:    aws.String(fileName),
 	}
 
-	result, err := svc.PutObject(input)
+	ctxTimeout, _ := context.WithTimeout(context.Background(), time.Second*10)
+	result, err := svc.PutObjectWithContext(ctxTimeout, input)
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok {
 			switch aerr.Code() {
@@ -62,7 +65,8 @@ func DownloadFileFromBucket(filename string, localFilePath string) error {
 		Key:    aws.String(filename),
 	}
 
-	result, err := svc.GetObject(input)
+	ctxTimeout, _ := context.WithTimeout(context.Background(), time.Second*10)
+	result, err := svc.GetObjectWithContext(ctxTimeout, input)
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok {
 			switch aerr.Code() {
