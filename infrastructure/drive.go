@@ -69,5 +69,6 @@ func GetRootFolderDrive() string {
 
 func init() {
 	loadDriveService()
+	loadAwsService()
 	log.Println("Load parameters succussful!")
 }

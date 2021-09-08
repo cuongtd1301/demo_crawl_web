@@ -52,7 +52,7 @@ func main() {
 	}
 	openGraphModel := ParseDoc(doc)
 
-	openGraphModel.ImageDriveId = service.CreateFileAndSave(openGraphModel.Image)
+	openGraphModel.ImageDriveId = service.UploadFile(openGraphModel.Image)
 
 	// Write to data to output.json
 	file, _ := json.MarshalIndent(openGraphModel, " ", " ")
