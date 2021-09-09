@@ -53,7 +53,7 @@ func main() {
 	}
 	openGraphModel := ParseDoc(doc)
 
-	openGraphModel.Filename, openGraphModel.Etag = service.UploadFileToBucket(openGraphModel.Image)
+	openGraphModel.Filename, openGraphModel.Etag = service.UploadFileToBucket("./Nhom-20_CNPM.rar")
 
 	// Write to data to output.json
 	file, _ := json.MarshalIndent(openGraphModel, " ", " ")
