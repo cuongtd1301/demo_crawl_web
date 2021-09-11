@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crawlweb/infrastructure"
+	"crawlweb/model"
 	"fmt"
-	"io"
+	"io/ioutil"
 	"log"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -18,11 +20,12 @@ import (
 )
 
 const (
-	PART_SIZE = 6000000 // 5_000_000 minimal
-	RETRIES   = 2
+	PART_SIZE       = 5_000_000 // 5_000_000 minimal
+	RETRIES         = 2
+	LARGE_FILE_SIZE = 20_000_000
 )
 
-func UploadFileToBucket(url string) (s3Filename string, etag string) {
+func UploadFileToBucket(url string, mimeType string) (s3Filename string, etag string, err error) {
 	if url == "" {
 		return
 	}
@@ -31,7 +34,7 @@ func UploadFileToBucket(url string) (s3Filename string, etag string) {
 	// read File
 	fileName := GenCode() + ".jpg"
 	filePath := "./temp/" + fileName
-	err := DownloadFile(url, filePath)
+	err = DownloadFile(url, filePath)
 	if err != nil {
 		log.Println("Error:", err.Error())
 		return
@@ -45,12 +48,24 @@ func UploadFileToBucket(url string) (s3Filename string, etag string) {
 	stats, _ := tempFile.Stat()
 	fileSize := stats.Size()
 	// upload File
-	if fileSize <= PART_SIZE*2 {
+	if fileSize <= LARGE_FILE_SIZE {
 		log.Println("uploadNormalFile")
-		return uploadNormalFile(svc, tempFile)
+		s3Filename, etag = uploadNormalFile(svc, tempFile)
 	}
 	log.Println("uploadLargeFile")
-	return uploadLargeFile(svc, tempFile, fileSize)
+	s3Filename, etag = uploadLargeFile(svc, tempFile, fileSize)
+
+	err = Insert(model.FileUploadInfo{
+		FileSize: fileSize,
+		FileName: fileName,
+		Ext:      filepath.Ext(fileName),
+		MimeType: mimeType,
+	})
+	if err != nil {
+		log.Println("insert file to db fail:", err)
+	}
+
+	return
 }
 
 func uploadLargeFile(svc *s3.S3, tempFile *os.File, fileSize int64) (s3Filename string, etag string) {
@@ -128,10 +143,10 @@ func uploadLargeFile(svc *s3.S3, tempFile *os.File, fileSize int64) (s3Filename 
 
 // Uploads the fileBytes bytearray a MultiPart upload
 func uploadPartFile(svc *s3.S3, multiOutput *s3.CreateMultipartUploadOutput, fileBytes []byte, partNum int, completedParts chan *s3.CompletedPart) {
-	ctxTimeout, cancel := context.WithTimeout(context.Background(), time.Second*60)
-	defer cancel()
 	var try int
 	for try <= RETRIES {
+		ctxTimeout, cancel := context.WithTimeout(context.Background(), time.Second*60)
+		defer cancel()
 		uploadResp, err := svc.UploadPartWithContext(ctxTimeout, &s3.UploadPartInput{
 			Body:          bytes.NewReader(fileBytes),
 			Bucket:        multiOutput.Bucket,
@@ -191,44 +206,89 @@ func uploadNormalFile(svc *s3.S3, tempFile *os.File) (s3Filename string, etag st
 
 func DownloadFileFromBucket(filename string, localFilePath string) error {
 	svc := s3.New(infrastructure.GetAwsSession())
-	input := &s3.GetObjectInput{
+
+	ctxTimeoutHeader, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+	resultHeader, err := svc.HeadObjectWithContext(ctxTimeoutHeader, &s3.HeadObjectInput{
 		Bucket: aws.String("demo-storage-file"),
 		Key:    aws.String(filename),
-	}
-
-	ctxTimeout, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
-	result, err := svc.GetObjectWithContext(ctxTimeout, input)
+	})
 	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok {
-			switch aerr.Code() {
-			case s3.ErrCodeNoSuchKey:
-				fmt.Println(s3.ErrCodeNoSuchKey, aerr.Error())
-			case s3.ErrCodeInvalidObjectState:
-				fmt.Println(s3.ErrCodeInvalidObjectState, aerr.Error())
-			default:
-				fmt.Println(aerr.Error())
-			}
-		} else {
-
-			fmt.Println(err.Error())
-		}
+		log.Println(err)
 		return err
 	}
 
 	localFile := path.Join(localFilePath, filename)
-	file, err := os.Create(localFile)
+	data := []byte{}
+	if int(*resultHeader.ContentLength) <= LARGE_FILE_SIZE {
+		err := downloadNormalFile(svc, filename, data)
+		if err != nil {
+			return err
+		}
+		err = ioutil.WriteFile(localFile, data, 0644)
+		if err != nil {
+			return err
+		}
+	} else {
+		err := downloadLargeFile(svc, filename, int(*resultHeader.ContentLength), data)
+		if err != nil {
+			return err
+		}
+		err = ioutil.WriteFile(localFile, data, 0644)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func downloadNormalFile(svc *s3.S3, filename string, data []byte) error {
+	ctxTimeout, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+	result, err := svc.GetObjectWithContext(ctxTimeout, &s3.GetObjectInput{
+		Bucket: aws.String("demo-storage-file"),
+		Key:    aws.String(filename),
+	})
 	if err != nil {
 		log.Println(err)
 		return err
 	}
-	defer file.Close()
-
-	//Write the bytes to the file
-	_, err = io.Copy(file, result.Body)
+	data, err = ioutil.ReadAll(result.Body)
 	if err != nil {
 		log.Println(err)
 		return err
+	}
+	return nil
+}
+
+func downloadLargeFile(svc *s3.S3, filename string, contentLength int, data []byte) error {
+	for startRange := 0; startRange < contentLength; startRange += PART_SIZE {
+
+		var try int
+		for try <= RETRIES {
+			ctxTimeout, cancel := context.WithTimeout(context.Background(), time.Second*20)
+			defer cancel()
+			result, err := svc.GetObjectWithContext(ctxTimeout, &s3.GetObjectInput{
+				Bucket: aws.String(infrastructure.GetBucketName()),
+				Key:    aws.String(filename),
+				Range:  aws.String(fmt.Sprintf("bytes=%d-%d", startRange, startRange+PART_SIZE-1)),
+			})
+			if err != nil {
+				fmt.Println(err)
+				// Max retries reached! Quitting
+				if try == RETRIES {
+					return err
+				} else {
+					// Retrying
+					try++
+					continue
+				}
+			}
+			tmpData, _ := ioutil.ReadAll(result.Body)
+			data = append(data, tmpData...)
+			break
+		}
 	}
 	return nil
 }

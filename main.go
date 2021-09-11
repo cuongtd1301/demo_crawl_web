@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crawlweb/model"
 	"crawlweb/service"
 	"encoding/json"
 	"fmt"
@@ -13,18 +14,6 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 )
-
-type OpenGraphModel struct {
-	Type        string
-	Title       string
-	SiteName    string
-	Description string
-	Author      string
-	Image       string
-	Url         string
-	Filename    string
-	Etag        string
-}
 
 // var contentsTag = cascadia.MustCompile("p, h1, h2, h3, h4, h5, h6")
 
@@ -53,7 +42,10 @@ func main() {
 	}
 	openGraphModel := ParseDoc(doc)
 
-	openGraphModel.Filename, openGraphModel.Etag = service.UploadFileToBucket("./Nhom-20_CNPM.rar")
+	openGraphModel.Filename, openGraphModel.Etag, err = service.UploadFileToBucket(openGraphModel.Image, res.Header.Get("content-type"))
+	if err != nil {
+		log.Println("get error:", err)
+	}
 
 	// Write to data to output.json
 	file, _ := json.MarshalIndent(openGraphModel, " ", " ")
@@ -61,7 +53,7 @@ func main() {
 	_ = ioutil.WriteFile("output.json", file, 0644)
 }
 
-func ParseDoc(doc *goquery.Document) (openGraphModel OpenGraphModel) {
+func ParseDoc(doc *goquery.Document) (openGraphModel model.OpenGraphModel) {
 	metaAttr := findMetaAttr(doc)
 	doc.Find("meta").Each(func(i int, el *goquery.Selection) {
 		// type
