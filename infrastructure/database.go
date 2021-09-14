@@ -22,15 +22,15 @@ var (
 
 var schema = `CREATE TABLE IF NOT EXISTS file_upload_infos (
 	id INT AUTO_INCREMENT PRIMARY KEY,
-	file_id BIGINT NOT NULL,
+	file_id BIGINT NOT NULL UNIQUE,
 	file_size BIGINT UNSIGNED,
 	file_name VARCHAR(255),
 	ext VARCHAR(255),
 	mime_type VARCHAR(255),
 	created_time INT(11) UNSIGNED NOT NULL,
-	updated_time INT(11) UNSIGNED,
+	updated_time INT(11) UNSIGNED NOT NULL,
 	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	updated_at TIMESTAMP
+	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );`
 
 func loadDatabase() {

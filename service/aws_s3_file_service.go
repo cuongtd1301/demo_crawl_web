@@ -25,6 +25,25 @@ const (
 	LARGE_FILE_SIZE = 20_000_000
 )
 
+func UploadFileUsingPresignedUrl(filename string) string {
+	if filename == "" {
+		return ""
+	}
+	svc := s3.New(infrastructure.GetAwsSession())
+	res, _ := svc.PutObjectRequest(&s3.PutObjectInput{
+		Bucket: aws.String(infrastructure.GetBucketName()),
+		Key:    aws.String(filename),
+	})
+
+	// Create the pre-signed url with an expiry
+	url, err := res.Presign(5 * time.Minute)
+	if err != nil {
+		fmt.Println("Failed to generate a pre-signed url: ", err)
+		return ""
+	}
+	return url
+}
+
 func UploadFileToBucket(url string, mimeType string) (s3Filename string, etag string, err error) {
 	if url == "" {
 		return
