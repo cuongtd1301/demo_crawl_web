@@ -71,5 +71,6 @@ func init() {
 	loadDriveService()
 	loadAwsService()
 	loadDatabase()
+	loadRedis()
 	log.Println("Load parameters succussful!")
 }

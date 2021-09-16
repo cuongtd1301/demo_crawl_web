@@ -5,9 +5,13 @@ import (
 	"context"
 	"crawlweb/infrastructure"
 	"crawlweb/model"
+	"crawlweb/utils"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,35 +24,17 @@ import (
 )
 
 const (
-	PART_SIZE       = 5_000_000 // 5_000_000 minimal
+	PART_SIZE       = 5_242_880 // 5_242_880 minimim
 	RETRIES         = 2
 	LARGE_FILE_SIZE = 20_000_000
 )
 
-func UploadFileUsingPresignedUrl(filename string) string {
-	if filename == "" {
-		return ""
-	}
-	svc := s3.New(infrastructure.GetAwsSession())
-	res, _ := svc.PutObjectRequest(&s3.PutObjectInput{
-		Bucket: aws.String(infrastructure.GetBucketName()),
-		Key:    aws.String(filename),
-	})
-
-	// Create the pre-signed url with an expiry
-	url, err := res.Presign(5 * time.Minute)
-	if err != nil {
-		fmt.Println("Failed to generate a pre-signed url: ", err)
-		return ""
-	}
-	return url
-}
-
 func UploadFileToBucket(url string, mimeType string) (s3Filename string, etag string, err error) {
 	if url == "" {
+		err = errors.New("url is EMPTY")
 		return
 	}
-	svc := s3.New(infrastructure.GetAwsSession())
+	// svc := s3.New(infrastructure.GetAwsSession())
 
 	// read File
 	fileName := GenCode() + ".jpg"
@@ -68,11 +54,14 @@ func UploadFileToBucket(url string, mimeType string) (s3Filename string, etag st
 	fileSize := stats.Size()
 	// upload File
 	if fileSize <= LARGE_FILE_SIZE {
-		log.Println("uploadNormalFile")
-		s3Filename, etag = uploadNormalFile(svc, tempFile)
+		s3Filename, etag, err = UploadFileUsingPresignedUrl(tempFile)
+	} else {
+		s3Filename, etag, err = UploadLargeFileUsingPresignedUrl(tempFile)
 	}
-	log.Println("uploadLargeFile")
-	s3Filename, etag = uploadLargeFile(svc, tempFile, fileSize)
+	if err != nil {
+		log.Println("upload file fail fail:", err)
+		return
+	}
 
 	err = Insert(model.FileUploadInfo{
 		FileSize: fileSize,
@@ -84,6 +73,136 @@ func UploadFileToBucket(url string, mimeType string) (s3Filename string, etag st
 		log.Println("insert file to db fail:", err)
 	}
 
+	return
+}
+
+func UploadFileUsingPresignedUrl(tempFile *os.File) (s3Filename string, etag string, err error) {
+	stats, _ := tempFile.Stat()
+	url := GetPresignedUrlUploadFile(infrastructure.GetBucketName(), tempFile.Name())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, tempFile)
+	if err != nil {
+		fmt.Println("error creating request")
+		return
+	}
+	req.ContentLength = int64(stats.Size())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Println("failed making request:", err)
+		return
+	}
+	defer resp.Body.Close()
+	fmt.Println("Status", resp.StatusCode, resp.Status)
+	return tempFile.Name(), resp.Header.Get("ETag"), nil
+}
+
+func UploadLargeFileUsingPresignedUrl(tempFile *os.File) (s3Filename string, etag string, err error) {
+	stats, _ := tempFile.Stat()
+	uploadId, listPresignedUrlPart, err := GetPresignedUrlUploadLargeFile(infrastructure.GetBucketName(), tempFile.Name(), stats.Size(), PART_SIZE)
+	if err != nil {
+		return
+	}
+	// multipart upload
+	var start, currentSize int
+	var remaining = int(stats.Size())
+	var partNum = 1
+	completedPartChannel := make(chan *PresignedUrlPart)
+	defer close(completedPartChannel)
+	buffer := make([]byte, stats.Size())
+	tempFile.Read(buffer)
+	for start = 0; remaining != 0; start += PART_SIZE {
+		if remaining < PART_SIZE*2 {
+			currentSize = remaining
+		} else {
+			currentSize = PART_SIZE
+		}
+		go uploadPartFileUsingPresignedUrl(listPresignedUrlPart[partNum-1], buffer[start:start+currentSize], completedPartChannel)
+		// Detract the current part size from remaining
+		remaining -= currentSize
+
+		partNum++
+	}
+
+	// append completedPart
+	completedAllPart := true
+	listCompletedParts := []*s3.CompletedPart{}
+	listInfoPart := []PresignedUrlPart{}
+	for i := 0; i < partNum-1; i++ {
+		tmp := <-completedPartChannel
+		if tmp == nil || !tmp.Success {
+			log.Printf("About upload because some parts get error\n")
+			completedAllPart = false
+			// return errors.New("About upload because some parts get error\n")
+		}
+		listInfoPart = append(listInfoPart, *tmp)
+		listCompletedParts = append(listCompletedParts, &s3.CompletedPart{
+			ETag:       aws.String(tmp.ETag),
+			PartNumber: aws.Int64(int64(tmp.PartNumber)),
+		})
+	}
+	// Import to redis
+	value, _ := json.Marshal(listInfoPart)
+	client := infrastructure.GetRedisClient()
+	ctxTimeout, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancel()
+	err = client.HSet(ctxTimeout, infrastructure.GetBucketName(), tempFile.Name(), string(value)).Err()
+	if err != nil {
+		return
+	}
+	// complete multipart upload
+	if !completedAllPart {
+		AbortMultipartUpload(infrastructure.GetBucketName(), tempFile.Name(), uploadId)
+		err = errors.New("About upload because some parts get error\n")
+		return
+	}
+	etag, err = CompleteMultipartUpload(infrastructure.GetBucketName(), tempFile.Name(), uploadId, listCompletedParts)
+	if err != nil {
+		return
+	}
+	s3Filename = tempFile.Name()
+	return
+}
+
+func uploadPartFileUsingPresignedUrl(part PresignedUrlPart, fileBytes []byte, completedParts chan *PresignedUrlPart) {
+	var try int
+	for try <= RETRIES {
+		body := bytes.NewReader(fileBytes)
+		req, err1 := http.NewRequest(http.MethodPut, part.Url, body)
+		ctxTimeout, cancel := context.WithTimeout(context.Background(), time.Second*60)
+		defer cancel()
+		resp, err2 := http.DefaultClient.Do(req.WithContext(ctxTimeout))
+		err := utils.FirstNonNil(err1, err2)
+		// Upload failed
+		if err != nil {
+			fmt.Println(err)
+			// Max retries reached! Quitting
+			if try == RETRIES {
+				completedParts <- &PresignedUrlPart{
+					UploadId:   part.UploadId,
+					ETag:       resp.Header.Get("Etag"),
+					PartNumber: part.PartNumber,
+					Url:        part.Url,
+					Success:    false,
+				}
+				return
+			} else {
+				// Retrying
+				try++
+			}
+		} else {
+			// Upload is done!
+			completedParts <- &PresignedUrlPart{
+				UploadId:   part.UploadId,
+				ETag:       resp.Header.Get("Etag"),
+				PartNumber: part.PartNumber,
+				Url:        part.Url,
+				Success:    true,
+			}
+			fmt.Printf("Part %v complete\n", part.PartNumber)
+			return
+		}
+	}
 	return
 }
 
@@ -310,6 +429,15 @@ func downloadLargeFile(svc *s3.S3, filename string, contentLength int, data []by
 		}
 	}
 	return nil
+}
+
+type PresignedUrlPart struct {
+	Key        string
+	UploadId   string
+	ETag       string
+	PartNumber int
+	Url        string
+	Success    bool
 }
 
 /*
